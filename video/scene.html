@@ -1,0 +1,333 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Avality — Time, found.</title>
+<style>
+  @font-face { font-family: "Inter"; src: url("fonts/Inter.woff2") format("woff2"); font-weight: 400 700; }
+  :root {
+    /* Three colors. Everything else is a tint of ink. */
+    --paper: #F5F5F7;
+    --ink: #1D1D1F;
+    --free: #1FAF6E;
+  }
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--paper); }
+  body { font-family: "Inter", sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; font-feature-settings: "ss01", "cv11"; }
+  #stage { position: absolute; inset: 0; }
+  .abs { position: absolute; left: 0; top: 0; will-change: transform, opacity; }
+  .bubble { display: flex; align-items: center; box-sizing: border-box; font-size: 36px; font-weight: 500; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; }
+  .bubble span { padding: 0 34px; }
+  .caption { width: 1920px; text-align: center; font-size: 60px; font-weight: 600; letter-spacing: -1.6px; }
+  .day { width: 240px; text-align: center; font-size: 24px; font-weight: 500; color: rgba(29,29,31,.5); letter-spacing: .2px; }
+  .hour { width: 90px; text-align: right; font-size: 20px; font-weight: 500; color: rgba(29,29,31,.38); }
+  .line { height: 1px; background: rgba(29,29,31,.09); transform-origin: 0 0; }
+  .card-inner { position: absolute; inset: 0; padding: 56px 60px; box-sizing: border-box; }
+  .eyebrow { font-size: 26px; font-weight: 500; color: rgba(29,29,31,.5); letter-spacing: -.2px; }
+  .title { font-size: 60px; font-weight: 600; letter-spacing: -1.8px; margin-top: 10px; }
+  .meta { font-size: 28px; font-weight: 500; color: rgba(29,29,31,.55); margin-top: 12px; letter-spacing: -.3px; }
+  .meta b { color: var(--free); font-weight: 600; }
+  .avatar { position: absolute; width: 76px; height: 76px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 25px; font-weight: 600; letter-spacing: -.3px; border: 4px solid #fff; box-sizing: border-box; }
+  .badge { position: absolute; right: -6px; bottom: -6px; width: 30px; height: 30px; border-radius: 50%; background: var(--free); border: 3px solid #fff; display: flex; align-items: center; justify-content: center; }
+  .btn { position: absolute; height: 76px; border-radius: 38px; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 600; color: #fff; letter-spacing: -.3px; overflow: hidden; }
+  .btn .lbl { position: absolute; display: flex; align-items: center; gap: 12px; }
+  .big { font-size: 132px; font-weight: 600; letter-spacing: -5px; white-space: nowrap; }
+  .word { display: inline-block; will-change: transform, opacity; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+// ---------------------------------------------------------------------------
+// Timing. 96 BPM → one beat = 0.625 s, one bar = 2.5 s. Every meaningful
+// change lands on a beat so picture and score move together.
+// ---------------------------------------------------------------------------
+const BEAT = 0.625;
+const b = n => n * BEAT;
+
+const clamp = (x, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, x));
+const prog = (t, a, d) => clamp((t - a) / d);
+const lerp = (a, c, k) => a + (c - a) * k;
+const ease = {
+  outCubic: k => 1 - Math.pow(1 - k, 3),
+  outQuint: k => 1 - Math.pow(1 - k, 5),
+  outExpo: k => (k >= 1 ? 1 : 1 - Math.pow(2, -10 * k)),
+  inOutCubic: k => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2),
+  inOutQuint: k => (k < .5 ? 16 * k ** 5 : 1 - Math.pow(-2 * k + 2, 5) / 2),
+  inCubic: k => k * k * k,
+  outBack: k => { const c1 = 1.1, c3 = c1 + 1; return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2); },
+};
+const mix = (c1, c2, k) => c1.map((v, i) => lerp(v, c2[i], k));
+const rgba = c => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${c[3] ?? 1})`;
+
+const PAPER = [245, 245, 247, 1], INK = [29, 29, 31, 1], FREE = [31, 175, 110, 1], WHITE = [255, 255, 255, 1];
+// Three people = three tints of ink. Colour is reserved for "free".
+const LANE = [[222, 222, 226, 1], [206, 206, 211, 1], [188, 188, 194, 1]];
+
+const stage = document.getElementById('stage');
+const el = (cls, html = '', parent = stage) => { const d = document.createElement('div'); d.className = 'abs ' + cls; d.innerHTML = html; parent.appendChild(d); return d; };
+const set = (d, s) => { for (const k in s) d.style[k] = s[k]; };
+
+// ---------------------------------------------------------------------------
+// Calendar geometry (Mon–Fri, 9 AM–5 PM, three lanes per day).
+// ---------------------------------------------------------------------------
+const G = { x: 400, y: 330, colW: 240, hourH: 72, h0: 9, h1: 17, pad: 14, laneGap: 6 };
+G.laneW = (G.colW - 2 * G.pad - 2 * G.laneGap) / 3;
+const rectFor = (day, s, e, lane) => ({
+  x: G.x + day * G.colW + G.pad + lane * (G.laneW + G.laneGap),
+  y: G.y + (s - G.h0) * G.hourH + 3,
+  w: G.laneW,
+  h: (e - s) * G.hourH - 6,
+});
+// Busy time. The only 45-minute gap shared by all three is Thu 2:30–3:15.
+const BUSY = [
+  // first six are the chat bubbles, morphing into the week
+  [1, 9.5, 12, 0], [3, 12.5, 14.5, 0], [2, 10, 12, 1], [0, 13, 15, 0], [4, 10, 13, 0], [3, 13, 14.5, 2],
+  [0, 9, 11, 0], [0, 10, 12.5, 1], [0, 9.5, 10.5, 2], [0, 14, 16, 1], [0, 12, 14.5, 2], [0, 15.5, 17, 2],
+  [1, 9, 10, 1], [1, 11, 13.5, 1], [1, 10, 11.5, 2], [1, 13.5, 16.5, 0], [1, 13, 15, 2], [1, 15, 17, 1],
+  [2, 9, 10.5, 0], [2, 9, 13, 2], [2, 12, 14, 0], [2, 13.5, 15.5, 1], [2, 14, 17, 2], [2, 15, 16.5, 0],
+  [3, 9, 11.5, 0], [3, 9.5, 11, 1], [3, 10, 12, 2], [3, 11.5, 14, 1], [3, 15.25, 17, 0], [3, 15.5, 16.5, 1], [3, 15.25, 16, 2],
+  [4, 9, 11.5, 1], [4, 11, 12.5, 2], [4, 14, 16, 0], [4, 12.5, 15, 1], [4, 13.5, 17, 2],
+];
+const SLOT = { day: 3, s: 14.5, e: 15.25 };
+
+// ---------------------------------------------------------------------------
+// Scene 1 — the problem, told as a thread that never ends.
+// ---------------------------------------------------------------------------
+const CHAT = [
+  { t: b(1), side: 'l', text: 'Does Tuesday work?' },
+  { t: b(2), side: 'r', text: 'I’m out Tuesday.' },
+  { t: b(3), side: 'l', text: 'Wednesday at 10?' },
+  { t: b(4), side: 'r', text: 'Can’t. Thursday?' },
+  { t: b(5), side: 'l', text: 'Only after 4.' },
+  { t: b(6), side: 'r', text: 'Let me check…' },
+];
+const CHAT_L = 540, CHAT_R = 1380, BH = 92, BG = 18, CHAT_BOTTOM = 740;
+CHAT.forEach(m => { m.el = el('bubble', `<span>${m.text}</span>`); });
+// measure natural widths once the font is in
+const W = {};
+function measure() {
+  CHAT.forEach(m => { m.el.style.width = 'auto'; m.w = Math.ceil(m.el.getBoundingClientRect().width); });
+  for (const [k, d] of Object.entries({ line1, line2, wordmark, tagline })) W[k] = d.getBoundingClientRect().width;
+}
+
+// ---------------------------------------------------------------------------
+// Scene 2/3 — the week.
+// ---------------------------------------------------------------------------
+const hlines = [], days = [], hours = [];
+for (let i = 0; i <= G.h1 - G.h0; i++) hlines.push(el('line'));
+['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].forEach(d => days.push(el('day', d)));
+for (let h = G.h0; h < G.h1; h++) hours.push(el('hour', h === 12 ? 'Noon' : (h > 12 ? h - 12 : h) + (h < 12 ? ' AM' : ' PM')));
+const blocks = BUSY.slice(CHAT.length).map(() => el(''));
+const slot = el('', '');
+const slotLbl = el('', '<div style="font-size:19px;font-weight:600;color:#fff;letter-spacing:-.2px;white-space:nowrap">2:30 PM</div>');
+const scan = el('', '');
+const cap1 = el('caption', 'Three calendars. One meeting.');
+const cap2 = el('caption', 'Avality finds the gap.');
+
+// ---------------------------------------------------------------------------
+// Scene 4 — the gap becomes the meeting.
+// ---------------------------------------------------------------------------
+const card = el('');
+const cardIn = el('card-inner', `
+  <div class="eyebrow">Design review</div>
+  <div class="title">Thursday, 2:30 PM</div>
+  <div class="meta">45 min · <b>Everyone’s free</b></div>`, card);
+const CHECK = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3.5 8.4l3 3 6-6.6" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const people = [['MA', LANE[0]], ['JL', LANE[1]], ['SK', LANE[2]]].map(([ini, c], i) => {
+  const a = el('', '', card); a.className = 'avatar'; a.innerHTML = ini + `<div class="badge">${CHECK}</div>`;
+  a.style.background = rgba(c); a.style.left = (60 + i * 60) + 'px'; a.style.top = '290px'; a.style.zIndex = 3 - i;
+  return a;
+});
+const btn = el('', '', card); btn.className = 'btn';
+btn.innerHTML = `<div class="lbl" id="l1">Confirm</div><div class="lbl" id="l2">${CHECK.replace(/16/g, '22')}Booked</div>`;
+const cursor = el('', `<svg width="40" height="52" viewBox="0 0 20 26"><path d="M2 1.5v19.2l4.9-4.6 3.1 7.1 3.3-1.4-3.1-7h6.6z" fill="#1D1D1F" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`);
+
+// ---------------------------------------------------------------------------
+// Scene 5 — the feeling.  Scene 6 — the name.
+// ---------------------------------------------------------------------------
+const line1 = el('big', `<span class="word">Everyone’s</span> <span class="word" style="color:var(--free)">free.</span>`);
+const line2 = el('big', `<span class="word" style="color:rgba(29,29,31,.4)">Finally.</span>`);
+const mark = el('');
+const markBars = [0, 1, 2].map(i => el('', '', mark));
+const markGap = el('', '', mark);
+const wordmark = el('', '<div style="font-size:120px;font-weight:650;letter-spacing:-4.5px;white-space:nowrap">Avality</div>');
+const tagline = el('', '<div style="font-size:42px;font-weight:500;letter-spacing:-.8px;color:rgba(29,29,31,.5);white-space:nowrap">Time, found.</div>');
+const fade = el('', ''); set(fade, { width: '1920px', height: '1080px', background: rgba(PAPER) });
+
+const box = (d, r) => set(d, { transform: `translate(${r.x}px,${r.y}px)`, width: r.w + 'px', height: r.h + 'px' });
+
+// ---------------------------------------------------------------------------
+// render(t): the whole film is a pure function of time.
+// ---------------------------------------------------------------------------
+function render(t) {
+  // ---------- global out-of-scene fades for the week ----------
+  const weekIn = prog(t, b(7), b(2));           // grid draws on
+  const weekOut = ease.inOutCubic(prog(t, b(24), b(1.5)));  // everything but the slot leaves
+  const dim = (x) => ease.inOutCubic(prog(t, b(16) + ((x - G.x) / (5 * G.colW)) * b(2.5), b(0.8))); // busy fades as scan passes
+
+  // ---------- Scene 1: chat → blocks ----------
+  const morphStart = b(7);
+  CHAT.forEach((m, i) => {
+    const a = ease.outQuint(prog(t, m.t, b(0.8)));
+    // bubbles below push this one up
+    let y = CHAT_BOTTOM;
+    for (let j = CHAT.length - 1; j > i; j--) y -= (BH + BG) * ease.inOutCubic(prog(t, CHAT[j].t, b(0.7)));
+    y -= BH;
+    const chat = { x: m.side === 'l' ? CHAT_L : CHAT_R - m.w, y: y + (1 - a) * 24, w: m.w, h: BH };
+    const [day, s, e, lane] = BUSY[i];
+    const tgt = rectFor(day, s, e, lane);
+    // staggered, overlapping morphs
+    const k = ease.inOutQuint(prog(t, morphStart + i * 0.07, b(2)));
+    const r = { x: lerp(chat.x, tgt.x, k), y: lerp(chat.y, tgt.y, k), w: lerp(chat.w, tgt.w, k), h: lerp(chat.h, tgt.h, k) };
+    box(m.el, r);
+    const fill = m.side === 'l' ? mix(WHITE, LANE[lane], k) : mix(INK, LANE[lane], k);
+    const d = dim(tgt.x);
+    set(m.el, {
+      background: rgba(fill),
+      color: m.side === 'l' ? rgba(INK) : '#fff',
+      borderRadius: lerp(BH / 2, 8, k) + 'px',
+      opacity: a * lerp(1, 0.55, d) * (1 - weekOut),
+      boxShadow: m.side === 'l' ? `0 1px 3px rgba(0,0,0,${0.07 * (1 - clamp(k * 4))})` : 'none',
+    });
+    m.el.firstChild.style.opacity = 1 - ease.outCubic(prog(t, morphStart + i * 0.07, b(0.7)));
+    m.el.style.transform += ` scale(${lerp(0.92, 1, a)})`;
+    m.el.style.transformOrigin = m.side === 'l' ? '0% 100%' : '100% 100%';
+  });
+
+  // ---------- Scene 2: the week ----------
+  hlines.forEach((d, i) => {
+    const k = ease.outCubic(prog(t, b(7.5) + i * 0.035, b(2)));
+    set(d, { transform: `translate(${G.x}px,${G.y + i * G.hourH}px) scaleX(${k})`, width: 5 * G.colW + 'px', opacity: (1 - weekOut) });
+  });
+  days.forEach((d, i) => {
+    const k = ease.outCubic(prog(t, b(8) + i * 0.06, b(1.5)));
+    set(d, { transform: `translate(${G.x + i * G.colW}px,${G.y - 44 + (1 - k) * 12}px)`, opacity: k * (1 - weekOut) });
+  });
+  hours.forEach((d, i) => {
+    const k = ease.outCubic(prog(t, b(8.2) + i * 0.035, b(1.5)));
+    set(d, { transform: `translate(${G.x - 110}px,${G.y + i * G.hourH - 11}px)`, opacity: k * (1 - weekOut) });
+  });
+  blocks.forEach((d, i) => {
+    const [day, s, e, lane] = BUSY[i + CHAT.length];
+    const r = rectFor(day, s, e, lane);
+    // fill in quickly, in reading order by time of day — the week gets crowded
+    const order = (s - 9) / 8 * 0.6 + day * 0.12;
+    const k = ease.outCubic(prog(t, b(9) + order + (i % 3) * 0.05, b(1.2)));
+    box(d, { x: r.x, y: r.y + r.h * (1 - k) * 0.5, w: r.w, h: r.h * lerp(0.2, 1, k) });
+    set(d, { background: rgba(LANE[lane]), borderRadius: '8px', opacity: k * lerp(1, 0.55, dim(r.x)) * (1 - weekOut) });
+  });
+
+  // captions
+  const c1 = ease.outCubic(prog(t, b(10), b(1.2))), c1o = ease.inOutCubic(prog(t, b(15), b(1)));
+  set(cap1, { transform: `translate(0,${140 + (1 - c1) * 20 - c1o * 16}px)`, opacity: c1 * (1 - c1o) });
+  const c2 = ease.outCubic(prog(t, b(20), b(1.2)));
+  set(cap2, { transform: `translate(0,${140 + (1 - c2) * 20 - weekOut * 16}px)`, opacity: c2 * (1 - weekOut) });
+
+  // ---------- Scene 3: the scan, and the gap ----------
+  const sk = ease.inOutCubic(prog(t, b(16), b(2.5)));
+  const sx = lerp(G.x - 10, G.x + 5 * G.colW + 10, sk);
+  const sOp = prog(t, b(16), 0.12) * (1 - prog(t, b(18.5), 0.3));
+  set(scan, {
+    transform: `translate(${sx - 160}px,${G.y - 6}px)`, width: '162px', height: (G.h1 - G.h0) * G.hourH + 12 + 'px', opacity: sOp,
+    background: 'linear-gradient(90deg, rgba(31,175,110,0) 0%, rgba(31,175,110,.10) 98%, rgba(31,175,110,1) 98.8%)',
+  });
+
+  const sr = rectFor(SLOT.day, SLOT.s, SLOT.e, 0);
+  const slotR = { x: sr.x, y: sr.y, w: G.colW - 2 * G.pad, h: sr.h };
+  const gk = ease.outBack(prog(t, b(19), b(1.1)));
+  // card morph
+  const ck = ease.inOutQuint(prog(t, b(24), b(2.2)));
+  const CARD = { x: 960 - 380, y: 540 - 230, w: 760, h: 460 };
+  const cardOut = ease.inOutCubic(prog(t, b(31), b(1.4)));
+  const r = {
+    x: lerp(slotR.x, CARD.x, ck), y: lerp(slotR.y + slotR.h / 2 * (1 - clamp(gk)), CARD.y, ck),
+    w: lerp(slotR.w, CARD.w, ck), h: lerp(slotR.h * Math.max(0, gk), CARD.h, ck),
+  };
+  box(slot, r);
+  set(slot, {
+    background: rgba(mix(FREE, WHITE, ease.inOutCubic(prog(t, b(24.4), b(1.6))))),
+    borderRadius: lerp(8, 40, ck) + 'px',
+    opacity: (t >= b(19) ? 1 : 0) * (1 - cardOut),
+    boxShadow: `0 ${lerp(0, 30, ck)}px ${lerp(0, 80, ck)}px rgba(0,0,0,${0.08 * ck}), 0 2px 6px rgba(0,0,0,${0.04 * ck})`,
+  });
+  slot.style.transform += ` translateY(${-cardOut * 40}px) scale(${lerp(1, 0.97, cardOut)})`;
+  const lk = ease.outCubic(prog(t, b(19.6), b(0.8)));
+  set(slotLbl, { transform: `translate(${slotR.x + 14}px,${slotR.y + 13}px)`, opacity: lk * (1 - ease.outCubic(prog(t, b(24), b(0.5)))) });
+
+  // card content, overlapping the tail of the morph
+  set(card, { transform: `translate(${CARD.x}px,${CARD.y - cardOut * 40}px) scale(${lerp(1, 0.97, cardOut)})`, width: CARD.w + 'px', height: CARD.h + 'px', opacity: 1 - cardOut });
+  const ci = ease.outCubic(prog(t, b(25.4), b(1.2)));
+  cardIn.querySelectorAll('.eyebrow,.title,.meta').forEach((n, i) => {
+    const k = ease.outCubic(prog(t, b(25.4) + i * 0.09, b(1.2)));
+    set(n, { opacity: k, transform: `translateY(${(1 - k) * 14}px)` });
+  });
+  people.forEach((a, i) => {
+    const k = ease.outCubic(prog(t, b(25.8) + i * 0.08, b(1)));
+    set(a, { opacity: k, transform: `translateY(${(1 - k) * 14}px)` });
+    const bk = ease.outBack(prog(t, b(27 + i * 0.5), b(0.6)));
+    set(a.querySelector('.badge'), { transform: `scale(${Math.max(0, bk)})`, opacity: bk > 0 ? 1 : 0 });
+  });
+  const tap = b(29);
+  const press = prog(t, tap - 0.08, 0.08) * (1 - prog(t, tap, 0.22));
+  const booked = ease.inOutCubic(prog(t, tap, b(0.6)));
+  const bw = lerp(210, 232, booked);
+  set(btn, {
+    left: (CARD.w - 60 - bw) + 'px', top: '290px', width: bw + 'px',
+    background: rgba(mix(INK, FREE, booked)), opacity: ci, transform: `scale(${1 - 0.05 * press})`,
+  });
+  set(btn.querySelector('#l1'), { opacity: 1 - booked, transform: `translateY(${-booked * 20}px)` });
+  set(btn.querySelector('#l2'), { opacity: booked, transform: `translateY(${(1 - booked) * 20}px)` });
+  // pointer glides in, taps, then steps aside
+  const btnC = { x: CARD.x + CARD.w - 60 - 105, y: CARD.y + 290 + 38 };
+  const cin = ease.inOutCubic(prog(t, b(27.2), b(1.7)));
+  const cout = ease.inOutCubic(prog(t, tap + 0.35, b(1.4)));
+  set(cursor, {
+    transform: `translate(${lerp(btnC.x + 300, btnC.x, cin) + cout * 70}px,${lerp(btnC.y + 220, btnC.y, cin) + cout * 60}px) scale(${1 - 0.08 * press})`,
+    opacity: prog(t, b(27.2), 0.3) * (1 - cout) * (1 - cardOut),
+  });
+
+  // ---------- Scene 5: the feeling ----------
+  const w1 = line1.querySelectorAll('.word');
+  const out5 = ease.inOutCubic(prog(t, b(39), b(1.2)));
+  const L1W = W.line1, L2W = W.line2;
+  set(line1, { transform: `translate(${960 - L1W / 2}px,${370 - out5 * 20}px)`, opacity: 1 - out5 });
+  w1.forEach((w, i) => {
+    const k = ease.outQuint(prog(t, b(32 + i), b(1.4)));
+    set(w, { opacity: k, transform: `translateY(${(1 - k) * 40}px)` });
+  });
+  const k2 = ease.outQuint(prog(t, b(34), b(1.6)));
+  set(line2, { transform: `translate(${960 - L2W / 2}px,${540 + (1 - k2) * 40 - out5 * 20}px)`, opacity: k2 * (1 - out5) });
+
+  // ---------- Scene 6: the name ----------
+  const M = 132, mx = 960 - (M + 44 + W.wordmark) / 2, my = 540 - M / 2 - 22;
+  const shift = ease.inOutQuint(prog(t, b(41.2), b(1.8)));    // mark makes room for the word
+  const endFade = ease.inOutCubic(prog(t, b(46.6), b(1.2)));
+  const markX = lerp(960 - M / 2, mx, shift);
+  set(mark, { transform: `translate(${markX}px,${my}px)`, width: M + 'px', height: M + 'px', opacity: 1 });
+  const barW = 30, bgap = 11, bx0 = (M - 3 * barW - 2 * bgap) / 2;
+  markBars.forEach((d, i) => {
+    const k = ease.outQuint(prog(t, b(40) + i * 0.09, b(1.2)));
+    set(d, { transform: `translate(${bx0 + i * (barW + bgap)}px,${M * (1 - k)}px)`, width: barW + 'px', height: M * k + 'px', borderRadius: '9px', background: rgba(LANE[i]) });
+  });
+  const gk2 = ease.outBack(prog(t, b(41), b(1)));
+  const gh = 34;
+  set(markGap, {
+    transform: `translate(${bx0 - 8}px,${M * 0.5 - gh / 2}px) scaleX(${Math.max(0, gk2)})`, width: 3 * barW + 2 * bgap + 16 + 'px', height: gh + 'px',
+    borderRadius: '10px', background: rgba(FREE), opacity: gk2 > 0 ? 1 : 0, boxShadow: `0 0 0 6px ${rgba(PAPER)}`,
+  });
+  const wk = ease.outQuint(prog(t, b(42), b(1.8))) * shift;
+  set(wordmark, { transform: `translate(${markX + M + 44 + (1 - wk) * 40}px,${my - 4}px)`, opacity: wk });
+  const tk = ease.outCubic(prog(t, b(43), b(1.6)));
+  set(tagline, { transform: `translate(${960 - W.tagline / 2}px,${my + M + 64 + (1 - tk) * 14}px)`, opacity: tk });
+  // hide the logo until its moment
+  mark.style.opacity = t >= b(39.5) ? 1 : 0;
+
+  set(fade, { opacity: endFade });
+}
+
+window.render = render;
+window.DURATION = 30;
+window.ready = document.fonts.ready.then(() => { measure(); render(0); return true; });
+</script>
+</body>
+</html>

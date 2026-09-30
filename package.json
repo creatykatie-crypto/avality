@@ -1,0 +1,23 @@
+{
+  "name": "avality",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/creatykatie-crypto/avality.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/creatykatie-crypto/avality/issues"
+  },
+  "homepage": "https://github.com/creatykatie-crypto/avality#readme",
+  "devDependencies": {
+    "playwright-core": "1.56"
+  }
+}
